@@ -70,6 +70,7 @@ A **⚙** gear button appears in the bottom-right corner:
 | Max DPR | `1.0 – 2.0` | `1.0` |
 | Click speed | `0.50 – 2.00×` | `1.00×` |
 | Trail speed | `0.50 – 2.00×` | `1.00×` |
+| Glow (click + trail bloom) | `0.00 – 4.00` | `1.00` |
 
 ## Build-time defaults
 
