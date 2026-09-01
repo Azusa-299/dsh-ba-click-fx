@@ -2,103 +2,83 @@
 
 > 🇨🇳 [中文版](./README.zh.md)
 
-Blue Archive (蔚蓝档案) style **click effect and cursor trail** as a DeepSeek Harness **web client plugin**.
+Blue Archive (蔚蓝档案) style **click effect + cursor trail** as a DeepSeek Harness **web client plugin**.
 
-This package vendors the open-source library [`ba-click-fx` v1.3.1](https://github.com/CialloKing/ba-click-fx)
-(verbatim — see `vendor/ba-click-fx.js`, a zero-dependency ESM bundle) and mounts it
-into the DSH web GUI through the standard client-module system. Clicking, dragging or
-moving the pointer over the GUI draws the game-style dissolved ring, center disk,
-click shards and cursor trail.
+This package vendors [`ba-click-fx` v1.3.1](https://github.com/CialloKing/ba-click-fx) verbatim
+(`vendor/ba-click-fx.js`, a zero-dependency ESM bundle) and mounts it into the DSH web GUI via
+the standard client-module system. Clicking, dragging or moving the pointer draws the game-style
+dissolved ring, center disk, click shards and cursor trail.
 
-The click effect is purely browser-side (DOM / canvas / pointer events), so:
-- the **browser half** (`src/client/index.js` → `lib/client.js`) owns all the visuals,
-- the **Host half** (`src/index.js` → `lib/index.js`) is a no-op entry point that lets
-  the Host Loader activate the row and serve the client bundle.
+Everything runs in the browser: the **browser half** (`src/client/index.js` → `lib/client.js`)
+owns the visuals, while the **Host half** (`src/index.js` → `lib/index.js`) is a no-op entry that
+lets the Host Loader activate the row and serve the client bundle.
 
-## Package layout
+## Layout
 
 ```
 dsh-ba-click-fx/
-├── package.json           # dsh.bundle (cordis.patch.yml) + dsh.client (web) declarations
-├── cordis.patch.yml       # inserts the plugin row into the loader composition
-├── vendor/ba-click-fx.js  # verbatim copy of ba-click-fx v1.3.1 dist bundle (the "照搬" source)
+├── package.json            # dsh.bundle + dsh.client (web) declarations
+├── cordis.patch.yml        # inserts the plugin row
+├── vendor/ba-click-fx.js   # vendored ba-click-fx v1.3.1 dist bundle
 ├── src/
-│   ├── index.js           # Host half (no-op apply)
-│   └── client/index.js    # Browser half (mounts BAClickFX, tears down via ctx.effect)
-├── scripts/build.mjs      # assembles lib/ from src/ + vendor/
-└── lib/                   # prebuilt artifacts (install-ready)
+│   ├── index.js            # Host half (no-op)
+│   └── client/index.js     # browser half: effect + config window + i18n/theme
+├── scripts/build.mjs       # assembles lib/ from src/ + vendor/
+└── lib/                    # prebuilt artifacts (install-ready)
     ├── index.js
-    └── client.js          # lazy-CJS factory: window.__ModuleLoader__.load({id, factory})
+    └── client.js           # lazy-CJS factory: window.__ModuleLoader__.load({id, factory})
 ```
-
-`lib/client.js` is the artifact format the DSH client module system serves at
-`/plugins/dsh-ba-click-fx/client.js`: a closure factory that registers with
-`window.__ModuleLoader__.load({ id, factory })`. The vendored ESM bundle's trailing
-`export { ... }` is stripped so its symbols (`BAClickFX`, `createConfig`, …) stay
-in closure scope; the plugin body re-exports them as CJS `exports` and adds its
-`apply(ctx, config)` entry point.
 
 ## How it works
 
-1. The Host Loader imports the package's node half and activates a live fiber for
-   the row `{ id: ba-click-fx, name: dsh-ba-click-fx }`.
-2. The client-modules Host half scans enabled Loader entries for `dsh.client`,
-   resolves `exports["./client"]` → `lib/client.js`, hashes it into the boot graph
-   and serves it under `/plugins`.
-3. In the browser, `apply(ctx, config)` calls `new BAClickFX(...)`, which auto-mounts
-   a full-screen overlay canvas (Shadow-DOM-free) and listens to DOM pointer events.
-4. `ctx.effect(...)` registers teardown so HMR reload and profile teardown remove the
-   overlay and its listeners.
+1. The Host Loader imports the node half and activates a fiber for `{ id: ba-click-fx, name: dsh-ba-click-fx }`.
+2. The client-modules host scans enabled `dsh.client` entries, resolves `exports["./client"]`
+   → `lib/client.js`, hashes it into the boot graph and serves it under `/plugins`.
+3. In the browser, `apply(ctx, config)` mounts `new BAClickFX(...)` (a full-screen overlay canvas).
+4. `ctx.effect(...)` tears everything down on HMR reload / profile teardown.
 
-## Install into a profile
-
-From the directory that contains this package (so `./dsh-ba-click-fx` resolves):
+## Install
 
 ```sh
 dsh plugin --profile web add ./dsh-ba-click-fx
-```
-
-`dsh plugin add` installs the dependency into `$DSH_HOME/profiles/web` (this package
-declares `dsh.bundle`, so it is also appended to `dsh.profile.bundles`), then
-**restart the `web` profile** so the Host picks up the new client bundle:
-
-```sh
-# stop the running web instance, then:
+# restart the web profile so the new client bundle loads:
 dsh --profile web
 ```
 
-To remove:
+Remove with `dsh plugin --profile web remove dsh-ba-click-fx`.
 
-```sh
-dsh plugin --profile web remove dsh-ba-click-fx
-```
+No `dsh` CLI? Copy this package (or a `pnpm pack` tarball) into the profile, add
+`"dsh-ba-click-fx": "link:./dsh-ba-click-fx"` to `dependencies` and `"dsh-ba-click-fx"` to
+`dsh.profile.bundles`, run `pnpm install`, then restart.
 
-### Manual install (no `dsh` CLI)
+## Configuration window
 
-1. Copy this package (or a tarball built with `pnpm pack`) into the profile tree.
-2. Add it to `$DSH_HOME/profiles/web/package.json` dependencies, e.g.
-   `"dsh-ba-click-fx": "link:./dsh-ba-click-fx"`, and append `"dsh-ba-click-fx"`
-   to `dsh.profile.bundles`.
-3. Run `pnpm install` inside `$DSH_HOME/profiles/web`.
-4. Restart the `web` profile.
+A **⚙** gear button appears in the bottom-right corner:
 
-## Customize the effect
+- **left-click** toggles the panel; **right-button-drag** moves it anywhere (position is persisted in `localStorage`);
+- edits apply **live** via `fx.setThemeColor()` / `fx.updateConfig()` and persist in `localStorage` (`dsh-ba-click-fx-config`);
+- **theme-aware** (uses DSH `--dsw-alias-*` tokens) and **i18n-aware** (detects DSH's locale from `<html lang>` and auto-switches 中文 / English).
 
-The default theme color is Blue Archive blue (`#4ca7ff`) with the full WebGL2
-pipeline and both click + trail enabled. Edit `DEFAULT_CONFIG` in
-`src/client/index.js`, then rebuild:
+| Control | Range | Default |
+|---|---|---|
+| Theme color | picker | `#4ca7ff` |
+| Scale | `0.50 – 3.00` | `1.00` |
+| Opacity | `0.00 – 1.00` | `1.00` |
+| Click effect | on / off | on |
+| Cursor trail | on / off | on |
+| Trail always | on / off | on |
+| Max DPR | `1.0 – 2.0` | `1.0` |
+| Click speed | `0.50 – 2.00×` | `1.00×` |
+| Trail speed | `0.50 – 2.00×` | `1.00×` |
 
-```sh
-npm run build
-```
+## Build-time defaults
 
-Rebuilding rewrites `lib/client.js` (and its source map). Restart the web profile to
-pick up the new bundle (the `web` profile is a built install, not the `dev:web`
-watcher).
+Defaults: Blue Archive blue (`#4ca7ff`), full WebGL2, click + trail on. To change the shipped
+defaults (backend, theme-color mode, touch action, …), edit `DEFAULT_CONFIG` in
+`src/client/index.js` and run `npm run build` (rewrites `lib/client.js` + map), then restart.
 
 ## Notes
 
-- The effect is appended as an overlay and never touches page layout.
-- No external runtime dependencies; the vendored bundle is fully self-contained.
-- The vendored `vendor/ba-click-fx.js` is copyright of the ba-click-fx authors
-  (MIT); see the upstream `LICENSE` / `THIRD_PARTY_NOTICES.md`.
+- The effect is an overlay; it never touches page layout.
+- Zero external runtime dependencies.
+- `vendor/ba-click-fx.js` is © the ba-click-fx authors (MIT); see upstream `LICENSE` / `THIRD_PARTY_NOTICES.md`.
