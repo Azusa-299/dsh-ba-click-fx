@@ -1,0 +1,8 @@
+# dsh-ba-click-fx bundle layer.
+# This patch layer mounts the plugin row. The host loader imports the package's
+# node half (lib/index.js) and, because package.json declares `dsh.client`,
+# the client-modules host half serves lib/client.js to the web GUI as
+# /plugins/dsh-ba-click-fx/client.js.
+- insert:
+    - id: ba-click-fx
+      name: dsh-ba-click-fx
