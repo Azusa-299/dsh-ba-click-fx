@@ -1,6 +1,6 @@
 {
   "name": "dsh-ba-click-fx",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "Blue Archive style click effect and cursor trail (ba-click-fx v1.3.1) as a DeepSeek Harness web client plugin. Adds the game-style click/touch effect and mouse trail to the DSH web GUI.",
   "license": "MIT",
   "type": "module",

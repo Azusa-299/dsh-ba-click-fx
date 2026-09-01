@@ -66,7 +66,7 @@ A **⚙** gear button appears in the bottom-right corner:
 | Opacity | `0.00 – 1.00` | `1.00` |
 | Click effect | on / off | on |
 | Cursor trail | on / off | on |
-| Trail always | on / off | on |
+| Trail always | on / off | off |
 | Max DPR | `1.0 – 2.0` | `1.0` |
 | Click speed | `0.50 – 2.00×` | `1.00×` |
 | Trail speed | `0.50 – 2.00×` | `1.00×` |
