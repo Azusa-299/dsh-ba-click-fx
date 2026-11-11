@@ -53,7 +53,8 @@ const clientBundle = `${banner}${libraryBody}\n${pluginBody}${footer}`
 
 // 3. Minimal inline source map so /plugins/dsh-ba-click-fx/client.js.map exists
 //    and browser tools can walk the bundle body back to this repo's files.
-const sources = ['../../../../A/temp/ba-click-fx-dsh-plugin/vendor/ba-click-fx.js', '../../src/client/index.js']
+//    Paths are relative to lib/, where the map is emitted.
+const sources = ['../vendor/ba-click-fx.js', '../src/client/index.js']
 const sourcesContent = [libraryBody, pluginBody]
 const map = {
   version: 3,
