@@ -10,18 +10,28 @@
  * On activation it:
  *   1. mounts the full-screen Blue Archive click effect + cursor trail
  *      (`new BAClickFX`),
- *   2. shows a self-contained configuration window: a draggable gear button
- *      (bottom-right by default, position persisted) + a panel that edits the
- *      effect live via `fx.updateConfig()` / `fx.setThemeColor()` and persists
- *      choices in `localStorage`,
- *   3. adapts the window to the host theme through the DSH `--dsw-alias-*`
- *      tokens (light / dark aware, with fallbacks when those tokens are absent),
- *   4. registers teardown through `ctx.effect`, so HMR unload/reload and profile
- *      teardown remove the overlay, the config window and their listeners.
+ *   2. registers one page in the DSH Settings dialog's left navigation
+ *      (`settings.section`) plus its own navigation glyph
+ *      (`settings.section.icon`) — there is no separate floating window any
+ *      more, so the effect is configured where every other DSH preference
+ *      lives,
+ *   3. edits the effect live through `fx.updateConfig()` / `fx.setThemeColor()`
+ *      and persists choices in `localStorage`,
+ *   4. routes all visible copy through the Client locale service
+ *      (`ctx.locale`), inheriting the host theme through the `--dsw-alias-*`
+ *      tokens,
+ *   5. tears everything down through `ctx.effect`, so HMR unload/reload and
+ *      profile teardown remove the overlay and both slot registrations.
  */
 
+const React = require('react')
+const h = React.createElement
+
 const STORAGE_KEY = 'dsh-ba-click-fx-config'
-const UI_STORAGE_KEY = 'dsh-ba-click-fx-ui'
+/** Settings section id (also the id its navigation icon registration answers to). */
+const SECTION_ID = 'ba-click-fx'
+/** Locale namespace owned by this plugin. */
+const LOCALE_NS = 'ba-click-fx'
 
 const DEFAULT_CONFIG = Object.freeze({
   // Blue Archive default theme blue (#4ca7ff).
@@ -61,104 +71,137 @@ function loadStored(key) {
   }
 }
 
+/**
+ * Persist one value, reporting whether the browser accepted the write.
+ * Storage may be unavailable (private mode / disabled): the effect still works
+ * live, and the page surfaces the failure instead of claiming a save.
+ * @param key - storage key.
+ * @param value - JSON-serializable value.
+ * @returns true when the write succeeded.
+ */
 function storeValue(key, value) {
   try {
     localStorage.setItem(key, JSON.stringify(value))
+    return true
   } catch {
-    // Storage may be unavailable (private mode / disabled) — state stays
-    // session-only and the UI still works.
+    return false
   }
 }
 
-// --- configuration window --------------------------------------------------
+// --- copy -------------------------------------------------------------------
 
-const PANEL_STYLE_ID = 'dsh-ba-fx-style'
-
-// Theme-aware via DSH `--dsw-alias-*` tokens (light/dark), with hardcoded
-// fallbacks for hosts that do not load the theme token stylesheet.
-const PANEL_CSS = `
-#dsh-ba-fx-toggle{position:fixed;z-index:2147483000;width:46px;height:46px;border-radius:50%;border:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.18));background:var(--dsw-alias-bg-layer-2,rgba(15,20,30,.9));color:var(--dsw-alias-label-primary,#fff);font-size:22px;line-height:1;cursor:grab;box-shadow:0 4px 18px rgba(0,0,0,.35);display:flex;align-items:center;justify-content:center;user-select:none;transition:background .15s}
-#dsh-ba-fx-toggle:active{cursor:grabbing}
-#dsh-ba-fx-toggle:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.12))}
-#dsh-ba-fx-panel{position:fixed;z-index:2147483000;width:280px;box-sizing:border-box;background:var(--dsw-alias-bg-layer-1,rgba(15,20,30,.95));border:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.16));border-radius:12px;padding:14px 16px 12px;box-shadow:0 10px 34px rgba(0,0,0,.5);color:var(--dsw-alias-label-primary,#e8ebf2);font:12px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;display:none}
-#dsh-ba-fx-panel.open{display:block}
-#dsh-ba-fx-panel h4{margin:0 0 10px;font-size:13px;font-weight:600;color:var(--dsw-alias-label-primary,#fff)}
-#dsh-ba-fx-row{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px}
-#dsh-ba-fx-row label{flex:0 0 auto;color:var(--dsw-alias-label-secondary,#c9cedb)}
-#dsh-ba-fx-row .ctrl{flex:1 1 auto;display:flex;align-items:center;justify-content:flex-end;gap:8px}
-#dsh-ba-fx-row input[type=range]{width:100%}
-#dsh-ba-fx-row input[type=color]{width:44px;height:26px;padding:0;border:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.2));border-radius:5px;background:none;cursor:pointer}
-#dsh-ba-fx-row input[type=checkbox]{width:auto}
-#dsh-ba-fx-row output{min-width:30px;text-align:right;color:var(--dsw-alias-label-secondary,#aab3c4);font-variant-numeric:tabular-nums}
-#dsh-ba-fx-actions{display:flex;justify-content:space-between;gap:8px;margin-top:10px}
-#dsh-ba-fx-actions button{flex:1;border:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.18));background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.06));color:var(--dsw-alias-label-primary,#e8ebf2);border-radius:7px;padding:6px 8px;font:inherit;cursor:pointer}
-#dsh-ba-fx-actions button:hover{background:var(--dsw-alias-interactive-bg-active,rgba(255,255,255,.14))}
-`
-
-// --- i18n -------------------------------------------------------------------
-// DSH keeps the active locale on <html lang> (e.g. "zh-CN" / "en"). Detect it
-// from the document and re-apply the window strings when it changes.
+// Flat dictionaries for the `ba-click-fx` locale namespace. The locale service
+// falls back through each language's chain to `en`, so other languages read
+// English until a dedicated dictionary is added.
 const I18N = {
   zh: {
-    title: 'ba-click-fx 特效配置',
-    toggleTitle: '配置 ba-click-fx（右键拖动可移动位置）',
-    aria: 'ba-click-fx 配置',
+    nav: '点击特效',
+    title: '点击特效',
+    intro: '《蔚蓝档案》风格的点击圆环、点击碎片与光标拖尾。修改会即时生效。',
     themeColor: '主题颜色',
+    themeColorDesc: '点击圆环与拖尾的主色。',
     scale: '全局缩放',
+    scaleDesc: '特效整体尺寸的倍率。',
     opacity: '不透明度',
+    opacityDesc: '特效覆盖层的整体不透明度。',
     clickEnabled: '点击特效',
+    clickEnabledDesc: '点击时绘制圆环、光盘与碎片。',
     trailEnabled: '光标拖尾',
+    trailEnabledDesc: '指针移动时绘制拖尾。',
     trailAlways: '拖尾始终显示',
+    trailAlwaysDesc: '开启后无需按住鼠标；关闭时只在拖动时显示。',
     maxDpr: '最大 DPR',
+    maxDprDesc: '限制覆盖层像素比，降低 GPU 开销。',
     clickTimeScale: '点击速度',
+    clickTimeScaleDesc: '点击动画的时间倍率。',
     trailTimeScale: '拖尾速度',
+    trailTimeScaleDesc: '拖尾动画的时间倍率。',
     glow: '光晕',
+    glowDesc: '点击与拖尾辉光的强度倍率。',
     reset: '恢复默认',
-    close: '关闭',
+    saved: '已保存',
+    saveError: '保存失败：浏览器存储不可用。',
   },
   en: {
-    title: 'ba-click-fx Effect Settings',
-    toggleTitle: 'Configure ba-click-fx (right-drag to move)',
-    aria: 'ba-click-fx configuration',
+    nav: 'Click FX',
+    title: 'Click effect',
+    intro: 'Blue Archive style click rings, click shards and a cursor trail. Changes apply immediately.',
     themeColor: 'Theme color',
+    themeColorDesc: 'Main color of the click rings and trail.',
     scale: 'Scale',
+    scaleDesc: 'Overall effect size multiplier.',
     opacity: 'Opacity',
+    opacityDesc: 'Overall opacity of the effect overlay.',
     clickEnabled: 'Click effect',
+    clickEnabledDesc: 'Draw rings, the center disk and shards on click.',
     trailEnabled: 'Cursor trail',
+    trailEnabledDesc: 'Draw a trail while the pointer moves.',
     trailAlways: 'Trail always',
+    trailAlwaysDesc: 'When off, the trail appears only while dragging.',
     maxDpr: 'Max DPR',
+    maxDprDesc: 'Cap the overlay pixel ratio to limit GPU cost.',
     clickTimeScale: 'Click speed',
+    clickTimeScaleDesc: 'Time multiplier for the click animation.',
     trailTimeScale: 'Trail speed',
+    trailTimeScaleDesc: 'Time multiplier for the trail animation.',
     glow: 'Glow',
+    glowDesc: 'Emission multiplier for click and trail bloom.',
     reset: 'Reset',
-    close: 'Close',
+    saved: 'Saved',
+    saveError: 'Could not save: browser storage is unavailable.',
   },
 }
 
-function detectLang() {
-  const docLang = typeof document !== 'undefined' ? (document.documentElement.lang || '') : ''
-  const navLang = typeof navigator !== 'undefined' ? (navigator.language || '') : ''
-  const tag = (docLang || navLang || 'en').toLowerCase()
-  return tag.startsWith('zh') ? 'zh' : 'en'
-}
+// --- page styles ------------------------------------------------------------
+
+// Scoped to the section page and rendered as a React element, so unmounting the
+// page removes the stylesheet with it. Colors are host theme tokens only.
+const SECTION_CSS = `
+.bafx-section{display:flex;flex-direction:column;max-width:760px;color:var(--dsw-alias-label-primary);font-family:inherit;font-size:13px;line-height:1.5}
+.bafx-title{margin:0;font-size:18px;line-height:26px;font-weight:600}
+.bafx-intro{margin:6px 0 0;font-size:13px;line-height:20px;color:var(--dsw-alias-label-tertiary)}
+.bafx-rows{display:flex;flex-direction:column;margin-top:18px;border-top:0.5px solid var(--dsw-alias-border-l2)}
+.bafx-row{display:flex;align-items:center;justify-content:space-between;gap:24px;padding:14px 0;border-bottom:0.5px solid var(--dsw-alias-border-l2)}
+.bafx-row-label{display:flex;flex-direction:column;gap:2px;min-width:0}
+.bafx-label{flex:0 1 auto;font-size:14px;line-height:20px;color:var(--dsw-alias-label-primary)}
+.bafx-desc{font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary)}
+.bafx-control{display:flex;flex:none;align-items:center;gap:10px}
+.bafx-range{width:180px;margin:0;accent-color:var(--dsw-alias-brand-primary);cursor:pointer}
+.bafx-value{min-width:46px;text-align:right;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums}
+.bafx-color{box-sizing:border-box;width:44px;height:28px;padding:2px;border:0.5px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-sm);background:transparent;cursor:pointer}
+.bafx-switch{box-sizing:border-box;position:relative;flex:0 0 auto;width:36px;height:20px;padding:2px;border:0;border-radius:999px;corner-shape:round;background:var(--dsw-alias-border-l3);cursor:pointer}
+.bafx-switch[aria-checked='true']{background:var(--dsw-alias-brand-primary)}
+.bafx-switch:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:2px}
+.bafx-thumb{display:block;width:16px;height:16px;border-radius:50%;corner-shape:round;background:var(--dsw-alias-switch-thumb);transition:transform 120ms ease}
+.bafx-switch[aria-checked='true'] .bafx-thumb{background:var(--dsw-alias-label-primary-foreground);transform:translateX(16px)}
+.bafx-actions{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-top:16px}
+.bafx-status{margin:0;flex:1 1 auto;min-height:18px;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary)}
+.bafx-status[data-error='true']{color:var(--dsw-alias-state-error-primary)}
+.bafx-reset{flex:none;border:0.5px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-sm);background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:13px;line-height:20px;padding:6px 14px;cursor:pointer}
+.bafx-reset:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:2px}
+@media (hover:hover){.bafx-reset:hover{background:var(--dsw-alias-interactive-bg-hover)}}
+@media (max-width:520px){.bafx-row{gap:16px}.bafx-control{gap:8px}.bafx-range{width:120px}.bafx-value{min-width:38px}}
+`
+
+// --- configurable fields ----------------------------------------------------
 
 // One row per configurable field: key, label-key, control kind and bounds.
 const CONTROL_DEFS = [
-  { key: 'themeColor', labelKey: 'themeColor', type: 'color' },
-  { key: 'scale', labelKey: 'scale', type: 'range', min: 0.5, max: 3, step: 0.05, format: v => v.toFixed(2) },
-  { key: 'opacity', labelKey: 'opacity', type: 'range', min: 0, max: 1, step: 0.01, format: v => v.toFixed(2) },
-  { key: 'clickEnabled', labelKey: 'clickEnabled', type: 'checkbox' },
-  { key: 'trailEnabled', labelKey: 'trailEnabled', type: 'checkbox' },
-  { key: 'trailAlways', labelKey: 'trailAlways', type: 'checkbox' },
-  { key: 'maxDpr', labelKey: 'maxDpr', type: 'range', min: 1, max: 2, step: 0.1, format: v => v.toFixed(1) },
-  { key: 'clickTimeScale', labelKey: 'clickTimeScale', type: 'range', min: 0.5, max: 2, step: 0.05, format: v => v.toFixed(2) },
-  { key: 'trailTimeScale', labelKey: 'trailTimeScale', type: 'range', min: 0.5, max: 2, step: 0.05, format: v => v.toFixed(2) },
+  { key: 'themeColor', labelKey: 'themeColor', descKey: 'themeColorDesc', type: 'color' },
+  { key: 'scale', labelKey: 'scale', descKey: 'scaleDesc', type: 'range', min: 0.5, max: 3, step: 0.05, format: v => v.toFixed(2) },
+  { key: 'opacity', labelKey: 'opacity', descKey: 'opacityDesc', type: 'range', min: 0, max: 1, step: 0.01, format: v => v.toFixed(2) },
+  { key: 'clickEnabled', labelKey: 'clickEnabled', descKey: 'clickEnabledDesc', type: 'checkbox' },
+  { key: 'trailEnabled', labelKey: 'trailEnabled', descKey: 'trailEnabledDesc', type: 'checkbox' },
+  { key: 'trailAlways', labelKey: 'trailAlways', descKey: 'trailAlwaysDesc', type: 'checkbox' },
+  { key: 'maxDpr', labelKey: 'maxDpr', descKey: 'maxDprDesc', type: 'range', min: 1, max: 2, step: 0.1, format: v => v.toFixed(1) },
+  { key: 'clickTimeScale', labelKey: 'clickTimeScale', descKey: 'clickTimeScaleDesc', type: 'range', min: 0.5, max: 2, step: 0.05, format: v => v.toFixed(2) },
+  { key: 'trailTimeScale', labelKey: 'trailTimeScale', descKey: 'trailTimeScaleDesc', type: 'range', min: 0.5, max: 2, step: 0.05, format: v => v.toFixed(2) },
   // Glow (bloom) after clicking. Shared multiplier that scales both the click
   // and trail bloom; an Fx param, not a constructor key.
-  { key: 'glowIntensity', labelKey: 'glow', type: 'range', min: 0, max: 4, step: 0.05, format: v => v.toFixed(2), default: 1, glow: true },
+  { key: 'glowIntensity', labelKey: 'glow', descKey: 'glowDesc', type: 'range', min: 0, max: 4, step: 0.05, format: v => v.toFixed(2), default: 1, glow: true },
 ]
 
-// The subset of defaults the panel can edit (reset must only touch these keys).
+// The subset of defaults the page can edit (reset must only touch these keys).
 const PANEL_DEFAULTS = Object.fromEntries(
   CONTROL_DEFS.map(def => [def.key, def.default ?? DEFAULT_CONFIG[def.key]]),
 )
@@ -179,284 +222,273 @@ function applyGlow(fx, value) {
   fx.setFxParam('bloom.trailEmission', TRAIL_EMISSION_BASE * value)
 }
 
-const bafxClamp = (value, min, max) => Math.min(max, Math.max(min, value))
-const BTN_SIZE = 46
-const PANEL_W = 280
-const PANEL_H = 300
-
-/** Build the draggable gear toggle + configuration panel. Returns { destroy }. */
-function createConfigPanel(fx, initial = PANEL_DEFAULTS, uiState) {
-  // Own style sheet (tagged so the client module system's HMR bookkeeping
-  // recognizes it).
-  if (document.getElementById(PANEL_STYLE_ID) === null) {
-    const style = document.createElement('style')
-    style.id = PANEL_STYLE_ID
-    style.dataset.plugin = 'dsh-ba-click-fx'
-    style.dataset.pluginCss = PANEL_STYLE_ID
-    style.textContent = PANEL_CSS
-    document.head.appendChild(style)
-  }
-
-  const viewportW = () => window.innerWidth
-  const viewportH = () => window.innerHeight
-
-  const toggle = document.createElement('button')
-  toggle.id = 'dsh-ba-fx-toggle'
-  toggle.type = 'button'
-  toggle.textContent = '⚙'
-
-  const panel = document.createElement('div')
-  panel.id = 'dsh-ba-fx-panel'
-  panel.setAttribute('role', 'dialog')
-  panel.setAttribute('aria-label', 'ba-click-fx 配置')
-
-  const title = document.createElement('h4')
-  title.textContent = 'ba-click-fx 特效配置'
-  panel.appendChild(title)
-
-  const inputs = new Map()
-  const labelEls = new Map()
+/**
+ * Copy the panel-owned values out of a merged config, applying each field's
+ * default when the stored document predates it.
+ * @param source - merged configuration.
+ * @returns a fresh plain object keyed by CONTROL_DEFS.
+ */
+function pickPanelValues(source) {
+  const values = {}
   for (const def of CONTROL_DEFS) {
-    const row = document.createElement('div')
-    row.id = 'dsh-ba-fx-row'
-    const label = document.createElement('label')
-    label.textContent = def.labelKey
-    label.htmlFor = `dsh-ba-fx-${def.key}`
-    const ctrl = document.createElement('span')
-    ctrl.className = 'ctrl'
+    values[def.key] = source[def.key] ?? def.default ?? DEFAULT_CONFIG[def.key]
+  }
+  return values
+}
 
-    let input
-    if (def.type === 'checkbox') {
-      input = document.createElement('input')
-      input.type = 'checkbox'
-      input.id = `dsh-ba-fx-${def.key}`
-      ctrl.appendChild(input)
-    } else {
-      input = document.createElement('input')
-      input.type = def.type
-      input.id = `dsh-ba-fx-${def.key}`
-      if (def.type === 'range') {
-        input.min = String(def.min)
-        input.max = String(def.max)
-        input.step = String(def.step)
-        const out = document.createElement('output')
-        out.htmlFor = input.id
-        ctrl.appendChild(input)
-        ctrl.appendChild(out)
-        inputs.set(`${def.key}:out`, out)
-      } else {
-        ctrl.appendChild(input)
-      }
-    }
-    row.appendChild(label)
-    row.appendChild(ctrl)
-    panel.appendChild(row)
-    inputs.set(def.key, input)
-    labelEls.set(def.key, label)
+/**
+ * Live configuration store shared by the settings page and the effect.
+ * The snapshot is `{ values, status }`; every write applies to the effect
+ * immediately and lands in `localStorage` after a short trailing debounce so a
+ * dragged slider does not write on every pixel. The status drives the page's
+ * save feedback (idle → saved, or error when storage rejects the write).
+ * @param fx - mounted BAClickFX instance.
+ * @param initial - panel values to start from.
+ * @returns the store face injected into the settings page.
+ */
+function createConfigStore(fx, initial) {
+  let state = { values: pickPanelValues(initial), status: 'idle' }
+  const listeners = new Set()
+  let saveTimer
+  let statusTimer
+
+  const applyOne = (def, value) => {
+    if (def.key === 'themeColor') fx.setThemeColor(value)
+    else if (def.glow) applyGlow(fx, value)
+    else if (def.fxParam) fx.setFxParam(def.fxParam, value)
+    else fx.updateConfig({ [def.key]: value })
   }
 
-  // Reset / close actions.
-  const actions = document.createElement('div')
-  actions.id = 'dsh-ba-fx-actions'
-  const resetBtn = document.createElement('button')
-  resetBtn.type = 'button'
-  resetBtn.textContent = '恢复默认'
-  const closeBtn = document.createElement('button')
-  closeBtn.type = 'button'
-  closeBtn.textContent = '关闭'
-  actions.appendChild(resetBtn)
-  actions.appendChild(closeBtn)
-  panel.appendChild(actions)
-
-  document.body.appendChild(toggle)
-  document.body.appendChild(panel)
-
-  // --- i18n: detect the DSH locale and re-apply strings on change ----------
-  let lang = detectLang()
-  const applyStrings = (value) => {
-    const dict = I18N[value] || I18N.en
-    title.textContent = dict.title
-    toggle.title = dict.toggleTitle
-    panel.setAttribute('aria-label', dict.aria)
-    for (const def of CONTROL_DEFS) {
-      const label = labelEls.get(def.key)
-      if (label) label.textContent = dict[def.labelKey]
-    }
-    resetBtn.textContent = dict.reset
-    closeBtn.textContent = dict.close
-  }
-  applyStrings(lang)
-  const localeObserver = new MutationObserver(() => {
-    const next = detectLang()
-    if (next !== lang) {
-      lang = next
-      applyStrings(next)
-    }
-  })
-  localeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['lang'] })
-
-  // --- position (drag-to-move) ---------------------------------------------
-  const clampPos = (left, top) => ({
-    left: bafxClamp(left, 8, Math.max(8, viewportW() - BTN_SIZE - 8)),
-    top: bafxClamp(top, 8, Math.max(8, viewportH() - BTN_SIZE - 8)),
-  })
-  let pos = (uiState && Number.isFinite(uiState.left) && Number.isFinite(uiState.top))
-    ? clampPos(uiState.left, uiState.top)
-    : clampPos(viewportW() - BTN_SIZE - 20, viewportH() - BTN_SIZE - 20)
-
-  const applyButtonPos = () => {
-    toggle.style.left = `${pos.left}px`
-    toggle.style.top = `${pos.top}px`
-  }
-  applyButtonPos()
-
-  // --- position: right-button drag-to-move, left-button toggles the panel ---
-  let drag = null
-  let suppressClick = false
-  toggle.addEventListener('contextmenu', (event) => event.preventDefault())
-
-  const onPointerDown = (event) => {
-    // Only the right button (button === 2) starts a drag. The left button keeps
-    // its normal behaviour and toggles the panel via the `click` event below.
-    if (event.button !== 2) return
-    event.preventDefault()
-    drag = {
-      startX: event.clientX, startY: event.clientY,
-      startLeft: pos.left, startTop: pos.top,
-      moved: false,
-    }
-    try { toggle.setPointerCapture(event.pointerId) } catch { /* older browsers */ }
-  }
-  const onPointerMove = (event) => {
-    if (!drag) return
-    const dx = event.clientX - drag.startX
-    const dy = event.clientY - drag.startY
-    if (Math.abs(dx) + Math.abs(dy) > 4) drag.moved = true
-    if (!drag.moved) return
-    pos = clampPos(drag.startLeft + dx, drag.startTop + dy)
-    applyButtonPos()
-  }
-  const onPointerEnd = (event) => {
-    if (!drag) return
-    const moved = drag.moved
-    drag = null
-    try { toggle.releasePointerCapture(event.pointerId) } catch { /* older browsers */ }
-    if (moved) {
-      // A right-button drag that actually moved: persist the new position and
-      // ignore any click the browser may still synthesize.
-      suppressClick = true
-      storeValue(UI_STORAGE_KEY, { left: pos.left, top: pos.top })
-      setTimeout(() => { suppressClick = false }, 0)
-    }
-  }
-  toggle.addEventListener('pointerdown', onPointerDown)
-  toggle.addEventListener('pointermove', onPointerMove)
-  toggle.addEventListener('pointerup', onPointerEnd)
-  toggle.addEventListener('pointercancel', onPointerEnd)
-
-  const positionPanel = () => {
-    const rect = toggle.getBoundingClientRect()
-    let left = rect.left
-    if (left + PANEL_W > viewportW() - 12) left = viewportW() - PANEL_W - 12
-    let top = rect.top - PANEL_H - 10
-    if (top < 12) top = rect.bottom + 10
-    if (top + PANEL_H > viewportH() - 12) top = viewportH() - PANEL_H - 12
-    panel.style.left = `${Math.max(12, left)}px`
-    panel.style.top = `${Math.max(12, top)}px`
+  const emit = () => {
+    for (const listener of listeners) listener()
   }
 
-  const onResize = () => {
-    pos = clampPos(pos.left, pos.top)
-    applyButtonPos()
-    if (panel.classList.contains('open')) positionPanel()
-  }
-  window.addEventListener('resize', onResize)
-
-  // Left-click toggles the panel (the right button is reserved for dragging).
-  const onClick = () => {
-    if (suppressClick) return
-    panel.classList.toggle('open')
-    if (panel.classList.contains('open')) positionPanel()
-  }
-  toggle.addEventListener('click', onClick)
-
-  // --- config controls -----------------------------------------------------
-  const readControls = () => {
-    const value = {}
-    for (const def of CONTROL_DEFS) {
-      const input = inputs.get(def.key)
-      if (def.type === 'checkbox') value[def.key] = input.checked
-      else if (def.type === 'color') value[def.key] = input.value
-      else value[def.key] = Number(input.value)
-    }
-    return value
+  const clearStatusTimer = () => {
+    if (statusTimer === undefined) return
+    clearTimeout(statusTimer)
+    statusTimer = undefined
   }
 
-  const applyToFx = (value) => {
-    for (const def of CONTROL_DEFS) {
-      if (!(def.key in value)) continue
-      const v = value[def.key]
-      if (def.key === 'themeColor') fx.setThemeColor(v)
-      else if (def.glow) applyGlow(fx, v)
-      else if (def.fxParam) fx.setFxParam(def.fxParam, v)
-      else fx.updateConfig({ [def.key]: v })
-    }
+  const publishStatus = (status) => {
+    clearStatusTimer()
+    state = { ...state, status }
+    emit()
+    if (status !== 'saved') return
+    // The confirmation is transient; the idle state keeps the line's height.
+    statusTimer = setTimeout(() => {
+      statusTimer = undefined
+      if (state.status !== 'saved') return
+      state = { ...state, status: 'idle' }
+      emit()
+    }, 1600)
   }
 
-  const syncControls = (value) => {
-    for (const def of CONTROL_DEFS) {
-      const input = inputs.get(def.key)
-      const raw = value[def.key]
-      const fallback = def.default ?? DEFAULT_CONFIG[def.key]
-      if (def.type === 'checkbox') input.checked = raw === true
-      else input.value = String(raw ?? fallback)
-      const out = inputs.get(`${def.key}:out`)
-      if (out && def.format) out.value = def.format(Number(input.value))
-      else if (out) out.value = input.value
-    }
+  const flush = () => {
+    saveTimer = undefined
+    publishStatus(storeValue(STORAGE_KEY, state.values) ? 'saved' : 'error')
   }
 
-  const handleChange = () => {
-    const next = readControls()
-    applyToFx(next)
-    storeValue(STORAGE_KEY, next)
-    for (const def of CONTROL_DEFS) {
-      const out = inputs.get(`${def.key}:out`)
-      if (out && def.format) out.value = def.format(next[def.key])
-    }
+  const scheduleSave = () => {
+    if (saveTimer !== undefined) clearTimeout(saveTimer)
+    saveTimer = setTimeout(flush, 200)
   }
 
-  for (const def of CONTROL_DEFS) {
-    inputs.get(def.key).addEventListener('input', handleChange)
-    inputs.get(def.key).addEventListener('change', handleChange)
+  const commit = (values) => {
+    clearStatusTimer()
+    state = { values, status: 'idle' }
+    emit()
   }
-
-  closeBtn.addEventListener('click', () => panel.classList.remove('open'))
-  resetBtn.addEventListener('click', () => {
-    syncControls(PANEL_DEFAULTS)
-    applyToFx(PANEL_DEFAULTS)
-    storeValue(STORAGE_KEY, PANEL_DEFAULTS)
-  })
-
-  // Seed the controls with the initial (actually applied) config so the panel
-  // reflects reality rather than the static defaults.
-  syncControls(initial)
 
   return {
-    destroy() {
-      localeObserver.disconnect()
-      window.removeEventListener('resize', onResize)
-      toggle.remove()
-      panel.remove()
-      const style = document.getElementById(PANEL_STYLE_ID)
-      if (style) style.remove()
+    /** @returns the current `{ values, status }` snapshot (stable until a write). */
+    get() {
+      return state
+    },
+    /**
+     * Apply one field live and schedule its persistence.
+     * @param key - CONTROL_DEFS key.
+     * @param value - new value.
+     */
+    set(key, value) {
+      const def = CONTROL_DEFS.find(candidate => candidate.key === key)
+      if (def === undefined) return
+      commit({ ...state.values, [key]: value })
+      applyOne(def, value)
+      scheduleSave()
+    },
+    /** Restore every panel-owned field to its default. */
+    reset() {
+      const values = { ...PANEL_DEFAULTS }
+      commit(values)
+      for (const def of CONTROL_DEFS) applyOne(def, values[def.key])
+      scheduleSave()
+    },
+    /**
+     * Subscribe to state changes.
+     * @param listener - called after every commit or status change.
+     * @returns unsubscribe.
+     */
+    subscribe(listener) {
+      listeners.add(listener)
+      return () => { listeners.delete(listener) }
+    },
+    /** Flush a pending write and release timers when the plugin unloads. */
+    dispose() {
+      if (saveTimer !== undefined) {
+        clearTimeout(saveTimer)
+        saveTimer = undefined
+        storeValue(STORAGE_KEY, state.values)
+      }
+      clearStatusTimer()
+      listeners.clear()
     },
   }
 }
 
+// --- settings page components ----------------------------------------------
+
+/**
+ * Render one control for a field.
+ * @param def - field definition.
+ * @param values - current panel values.
+ * @param api - live config store.
+ * @param labelId - id of the visible label element.
+ * @param descId - id of the description element.
+ * @returns the control element(s).
+ */
+function renderControl(def, values, api, labelId, descId) {
+  const inputId = `dsh-ba-click-fx-${def.key}`
+  const value = values[def.key]
+  if (def.type === 'color') {
+    return h('input', {
+      id: inputId,
+      type: 'color',
+      className: 'bafx-color',
+      value: typeof value === 'string' ? value : String(value),
+      'aria-labelledby': labelId,
+      'aria-describedby': descId,
+      onChange: (event) => { api.set(def.key, event.target.value) },
+    })
+  }
+  if (def.type === 'range') {
+    return [
+      h('input', {
+        key: 'input',
+        id: inputId,
+        type: 'range',
+        className: 'bafx-range',
+        min: String(def.min),
+        max: String(def.max),
+        step: String(def.step),
+        value: String(value),
+        'aria-labelledby': labelId,
+        'aria-describedby': descId,
+        onChange: (event) => { api.set(def.key, Number(event.target.value)) },
+      }),
+      h('output', {
+        key: 'output',
+        className: 'bafx-value',
+        htmlFor: inputId,
+      }, def.format ? def.format(Number(value)) : String(value)),
+    ]
+  }
+  const checked = value === true
+  return h('button', {
+    id: inputId,
+    type: 'button',
+    role: 'switch',
+    'aria-checked': checked,
+    'aria-labelledby': labelId,
+    'aria-describedby': descId,
+    className: 'bafx-switch',
+    onClick: () => { api.set(def.key, !checked) },
+  }, h('span', { className: 'bafx-thumb', 'aria-hidden': true }))
+}
+
+/**
+ * One settings page row: visible label plus its control.
+ * @param def - field definition.
+ * @param values - current panel values.
+ * @param api - live config store.
+ * @param t - localized copy.
+ * @returns the row element.
+ */
+function renderRow(def, values, api, t) {
+  const labelId = `dsh-ba-click-fx-${def.key}-label`
+  const descId = `dsh-ba-click-fx-${def.key}-desc`
+  return h('div', { className: 'bafx-row', key: def.key },
+    h('div', { className: 'bafx-row-label' },
+      h('span', { className: 'bafx-label', id: labelId }, t(def.labelKey)),
+      h('span', { className: 'bafx-desc', id: descId }, t(def.descKey)),
+    ),
+    h('div', { className: 'bafx-control' }, renderControl(def, values, api, labelId, descId)),
+  )
+}
+
+/**
+ * The `settings.section` page: the effect's preference rows.
+ * @param props - owner `close`, the framework `t` seat and the injected store.
+ * @returns the section page.
+ */
+function BaClickFxSection(props) {
+  const { t, api } = props
+  const { values, status } = React.useSyncExternalStore(api.subscribe, api.get, api.get)
+  const statusText = status === 'saved' ? t('saved') : status === 'error' ? t('saveError') : ''
+  return h('div', { className: 'bafx-section' },
+    h('style', null, SECTION_CSS),
+    h('h2', { className: 'bafx-title' }, t('title')),
+    h('p', { className: 'bafx-intro' }, t('intro')),
+    h('div', { className: 'bafx-rows' }, CONTROL_DEFS.map(def => renderRow(def, values, api, t))),
+    h('div', { className: 'bafx-actions' },
+      h('p', {
+        className: 'bafx-status',
+        role: status === 'error' ? 'alert' : 'status',
+        'aria-live': status === 'error' ? 'assertive' : 'polite',
+        'data-error': status === 'error' ? 'true' : undefined,
+      }, statusText),
+      h('button', { type: 'button', className: 'bafx-reset', onClick: () => { api.reset() } }, t('reset')),
+    ),
+  )
+}
+
+/**
+ * The `settings.section.icon` glyph: a Blue Archive halo (tilted ring) with a
+ * sparkle, drawn in `currentColor` so the shell's nav states theme it.
+ * @param props.size - requested square edge in pixels.
+ * @returns the navigation icon.
+ */
+function BaClickFxIcon({ size = 16 }) {
+  return h('svg', {
+    width: size,
+    height: size,
+    viewBox: '0 0 16 16',
+    fill: 'none',
+    'aria-hidden': true,
+    focusable: 'false',
+    style: { display: 'block' },
+  },
+  h('ellipse', {
+    cx: 8,
+    cy: 10,
+    rx: 5.7,
+    ry: 2.2,
+    transform: 'rotate(-12 8 10)',
+    stroke: 'currentColor',
+    strokeWidth: 1.3,
+    strokeLinecap: 'round',
+  }),
+  h('path', {
+    d: 'M11.6 2.3l.6 1.4 1.4.6-1.4.6-.6 1.4-.6-1.4-1.4-.6 1.4-.6z',
+    fill: 'currentColor',
+  }),
+  )
+}
+
+// --- activation -------------------------------------------------------------
+
 /**
  * Browser plugin body: mount the full-screen Blue Archive click effect and
- * cursor trail, expose a draggable, theme-aware configuration window, and tear
+ * cursor trail, publish its settings page and navigation icon, and tear
  * everything down when the plugin is unloaded.
  * @param ctx - client cordis context.
  * @param config - optional per-deployment overrides (spread over the defaults).
@@ -474,22 +506,54 @@ function apply(ctx, config = {}) {
     Object.entries(merged).filter(([key]) => !FX_PARAM_KEYS.has(key)),
   )
   const fx = new BAClickFX(constructorOptions)
-  // Apply any persisted Fx params that the panel owns.
+  // Apply any persisted Fx params that the page owns.
   for (const def of CONTROL_DEFS) {
-    if (def.glow && merged[def.key] !== undefined) {
-      applyGlow(fx, merged[def.key])
-    } else if (def.fxParam && merged[def.key] !== undefined) {
-      fx.setFxParam(def.fxParam, merged[def.key])
-    }
+    if (merged[def.key] === undefined) continue
+    if (def.glow) applyGlow(fx, merged[def.key])
+    else if (def.fxParam) fx.setFxParam(def.fxParam, merged[def.key])
   }
-  const ui = loadStored(UI_STORAGE_KEY)
-  const panel = createConfigPanel(fx, merged, ui)
   ctx.effect(
-    () => () => { fx.destroy(); panel.destroy() },
+    () => () => { fx.destroy() },
     'dsh-ba-click-fx: click effect lifecycle',
   )
+
+  const configStore = createConfigStore(fx, merged)
+  ctx.effect(
+    () => () => { configStore.dispose() },
+    'dsh-ba-click-fx: config store timers',
+  )
+  // Copy follows the host language: the locale service falls back to English
+  // for languages this plugin does not translate yet.
+  ctx.effect(
+    () => ctx.locale.register(LOCALE_NS, I18N),
+    'dsh-ba-click-fx: copy dictionaries',
+  )
+  const t = ctx.locale.bind(LOCALE_NS)
+
+  // The settings page lives in the Settings dialog's left navigation, beside
+  // the host's own sections; the page replaces the old floating gear window.
+  ctx.slots.inject('settings.section', () => ctx.slots.register({
+    name: 'settings.section',
+    id: SECTION_ID,
+    order: 30,
+    label: () => t('nav'),
+    locale: LOCALE_NS,
+    inject: () => ({ api: configStore }),
+  }, BaClickFxSection))
+
+  // Its own navigation glyph (Blue Archive halo), addressed by the section id.
+  ctx.slots.inject('settings.section.icon', () => ctx.slots.register({
+    name: 'settings.section.icon',
+    id: SECTION_ID,
+    order: 30,
+  }, BaClickFxIcon))
 }
 
-// A client bundle that has no cross-plugin value imports needs no `inject`.
-// The module table seed provides nothing this body `require()`s.
-Object.assign(exports, { name: 'ba-click-fx', apply })
+// `slots` and `locale` are the two services this body uses; waiting for both
+// makes the client activation audit report a missing host service instead of
+// letting registration throw mid-apply.
+Object.assign(exports, {
+  name: 'ba-click-fx',
+  inject: ['slots', 'locale'],
+  apply,
+})
